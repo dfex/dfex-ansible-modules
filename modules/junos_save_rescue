@@ -1,0 +1,143 @@
+#!/usr/bin/python
+
+# Copyright (c) 1999-2014, Juniper Networks Inc.
+#               2014, Jeremy Schulman
+#               2015, Ben Dale
+# All rights reserved.
+#
+# License: Apache 2.0
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright
+#   notice, this list of conditions and the following disclaimer.
+#
+# * Redistributions in binary form must reproduce the above copyright
+#   notice, this list of conditions and the following disclaimer in the
+#   documentation and/or other materials provided with the distribution.
+#
+# * Neither the name of the Juniper Networks nor the
+#   names of its contributors may be used to endorse or promote products
+#   derived from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY Juniper Networks, Inc. ''AS IS'' AND ANY
+# EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL Juniper Networks, Inc. BE LIABLE FOR ANY
+# DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+DOCUMENTATION = '''
+---
+module: junos_save_rescue
+author: Ben Dale, Eighth Layer
+version_added: "1.0.0"
+short_description: Save the current running configuration to rescue configuration
+description:
+    - Execute the Junos OS B(request system configuration rescue save) command to copy
+    the current configuration to the rescue configuration (clearing down system alarms in the 
+    process)
+requirements:
+    - junos-eznc >= 1.2.2
+    - junos-netconify >= 1.0.1
+options:
+    host:
+        description:
+            - Set to {{ inventory_hostname }}
+        required: false
+    user:
+        description:
+            - Login username
+        required: false
+        default: $USER
+    passwd:
+        description:
+            - Login password
+        required: false
+        default: assumes ssh-key active
+    logfile:
+        description:
+            - Path on the local server where the progress status is logged
+              for debugging purposes
+        required: false
+        default: None
+    port:
+        description:
+            - TCP port number to use when connecting to the device
+        required: false
+        default: 830
+'''
+
+EXAMPLES = '''
+- junos_save_rescue:
+    host={{ inventory_hostname }}
+'''
+
+import os
+import logging
+from distutils.version import LooseVersion
+
+
+def main():
+    module = AnsibleModule(
+        argument_spec=dict(
+            host=dict(required=False, default=None),    # host or ipaddr
+            user=dict(required=False, default=os.getenv('USER')),
+            passwd=dict(required=False, default=None),
+            logfile=dict(required=False, default=None),
+            port=dict(required=False, default=830)
+        ),
+        supports_check_mode=False)
+
+    args = module.params
+
+    results = {}
+
+    logfile = module.params['logfile']
+    if logfile is not None:
+        logging.basicConfig(filename=logfile, level=logging.INFO,
+                            format='%(asctime)s:%(name)s:%(message)s')
+        logging.getLogger().name = 'NETCONIFY:' + module.params['host']
+
+        def log_notify(self, event, message):
+            logging.info("%s:%s" % (event, message))
+        use_notifier = log_notify
+    else:
+        def silent_notify(self, event, message):
+            pass
+        use_notifier = silent_notify
+
+    try:
+        from jnpr.junos import Device
+        from jnpr.junos.version import VERSION
+        if not LooseVersion(VERSION) >= LooseVersion('1.2.2'):
+            module.fail_json(msg='junos-eznc >= 1.2.2 is required for this module')
+    except ImportError:
+        module.fail_json(msg='junos-eznc >= 1.2.2 is required for this module')
+
+    dev = Device(args['host'], user=args['user'], password=args['passwd'], port=args['port'])
+    try:
+        use_notifier(None, 'LOGIN', 'host={0}'.format(args['host']))
+        dev.open()
+        use_notifier(None, 'LOGIN', 'OK')
+    except Exception as err:
+        msg = 'unable to connect to {0}: {1}'.format(args['host'], str(err))
+        module.fail_json(msg=msg)
+        # --- UNREACHABLE ---
+
+    use_notifier(None, 'RESCUE_SAVE', 'invoking command')
+    dev.cli('request system configuration rescue save')
+    results['changed'] = True
+    # no close, we're done after this point.
+    
+    # indicate done in the logfile and return results
+    use_notifier(None, 'DONE', 'OK')
+    module.exit_json(**results)
+
+from ansible.module_utils.basic import *
+main()
